@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
+import { JSDOM } from 'jsdom';
 import rp from 'request-promise-native';
 import syncRequest from 'sync-request';
 import schedule from 'node-schedule';
@@ -11,7 +12,6 @@ export interface Config {
   dataPath: string;
   apiURL: string;
   feedURL: string;
-  keys: {name: string, location: string}[];
   saveDataCron?: any;
   log?: boolean;
   dryRun?: boolean;
@@ -22,6 +22,7 @@ export interface Bus {
   id: string;
   invalidateTime?: Date | string;
   locations: string[];
+  available: boolean;
 }
 
 export interface ExternalBus {
@@ -30,20 +31,12 @@ export interface ExternalBus {
   locations: string[];
   invalidate_time?: string;
   other_names?: string[];
+  available: boolean;
 }
 
 export interface Data {
   lastUpdated: Date | string;
   buses: Record<string, Bus>;
-}
-
-export interface Feed {
-  version: string;
-  encoding: string;
-  feed: {
-    updated: {$t: string},
-    entry: Record<string, {$t: string}>[]
-  };
 }
 
 interface GenericResponse {
@@ -81,7 +74,7 @@ try {
   buses.forEach(bus => {
     if (bus.name) {
       let key = bus.name;
-      data.buses[key] = {id: bus._id, locations: bus.locations};
+      data.buses[key] = {id: bus._id, locations: bus.locations, available: bus.available};
       if (bus.invalidate_time) {
         data.buses[key].invalidateTime = new Date(bus.invalidate_time);
       }
@@ -111,75 +104,78 @@ async function saveData() {
 }
 
 export async function fetchFromGoogleSheets() {
-  const feed: Feed = await rp.get(config.feedURL, {json: true});
+  const { document } = new JSDOM(await rp.get(config.feedURL)).window;
   let busCache: ExternalBus[];
-  log(`Feed last updated at ${feed.feed.updated.$t}`);
-  // if (new Date(feed.feed.updated.$t) >= data.lastUpdated) {
-    log(`Updating buses...`);
-    await feed.feed.entry.reduce<Promise<void>>(async (acc, entry) => {
-      await acc;
-      await Promise.all(config.keys.map(async (keys) => {
-        const name: string = entry[keys.name] && entry[keys.name].$t;
-        if (!name) {
+  let seenBuses: Record<string, boolean> = {};
+  log(`Updating buses...`);
+  await [...document.getElementsByTagName("tr")].slice(3).map(row => {
+    return row.getElementsByTagName("td")
+  }).reduce<Promise<void>>(async (acc, row) => {
+    await acc;
+    await Promise.all([0, 2].map(async (index) => {
+      const name = row[index].textContent.trim();
+      if (name.length < 1) {
+        return;
+      }
+
+      const locationStr = row[index + 1].textContent.trim();
+      let location: string;
+      if (locationStr.length > 0) {
+        location = locationStr;
+      }
+      log(`=== ${name} @ ${location} ===`);
+
+      let bus = data.buses[name];
+      if (!bus) {
+        log(`${name} not found, attempting to update internal database`);
+        if (!busCache) {
+          busCache = await rp.get(config.apiURL + "/buses", {json: true});
+        }
+
+        let foundBus = busCache.find(bus => {
+          return bus.name === name || (bus.other_names && bus.other_names.includes(name));
+        });
+
+        if (foundBus) {
+          log(`${name} found, inserting ${foundBus._id} into database`);
+          data.buses[name] = {id: foundBus._id, locations: foundBus.locations, invalidateTime: foundBus.invalidate_time && new Date(foundBus.invalidate_time), available: foundBus.available}
+          dataUpdated = true;
+        } else if (config.dryRun) {
+          log(`${name} not found; skipping bus creation in dry run`);
           return;
+        } else {
+          log(`Creating ${name}...`);
+          const response: PostResponse = await rp.post(config.apiURL + "/buses", {json: {
+            name,
+            available: true
+          }, headers: {Authorization: `Basic ${config.token}`}});
+          log(`Done creating bus ${name}. ID: ${response.id}`)
+          data.buses[name] = {id: response.id, locations: [], available: true}
         }
 
-        const location: string = entry[keys.location] && entry[keys.location].$t.toUpperCase();
-        log(`=== ${name} @ ${location} ===`);
+        bus = data.buses[name];
+        dataUpdated = true;
+      }
 
-        let bus = data.buses[name];
-        if (!bus) {
-          log(`${name} not found, attempting to update internal database`);
-          if (!busCache) {
-            busCache = await rp.get(config.apiURL + "/buses", {json: true});
-          }
+      seenBuses[name] = true;
 
-          let foundBus = busCache.find(bus => {
-            return bus.name === name || (bus.other_names && bus.other_names.includes(name));
-          });
+      if (!bus.available) {
+        console.log(`Marking ${name} as available`);
+        bus.available = true;
 
-          if (foundBus) {
-            log(`${name} found, inserting ${foundBus._id} into database`);
-            data.buses[name] = {id: foundBus._id, locations: foundBus.locations, invalidateTime: foundBus.invalidate_time && new Date(foundBus.invalidate_time)}
-            dataUpdated = true;
-          } else if (config.dryRun) {
-            log(`${name} not found; skipping bus creation in dry run`);
-            return;
-          } else {
-            log(`Creating ${name}...`);
-            const response: PostResponse = await rp.post(config.apiURL + "/buses", {json: {
-              name,
-              available: true
-            }, headers: {Authorization: `Basic ${config.token}`}});
-            log(`Done creating bus ${name}. ID: ${response.id}`)
-            data.buses[name] = {id: response.id, locations: []}
-          }
-
-          bus = data.buses[name];
+        if (!config.dryRun) {
+          await rp.patch(config.apiURL + "/buses/" + bus.id, {json: {available: true}, headers: {Authorization: `Basic ${config.token}`}});
         }
 
-        if (location) {
-          if ((!bus.invalidateTime || bus.invalidateTime <= new Date()) || bus.locations[0] !== location) {
-            log(`Setting ${name}'s location to ${location}.`);
+        dataUpdated = true;
+      }
 
-            const now = new Date();
-            bus.locations = [location];
-            bus.invalidateTime = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
-
-            const url = config.apiURL + "/buses/" + bus.id + "/location";
-            if (config.dryRun) {
-              log(`Will PUT ${url}.`);
-            } else {
-              await rp.put(url, {json: {locations: bus.locations, invalidate_time: bus.invalidateTime, source: "google_sheets"}, headers: {Authorization: `Basic ${config.token}`}});
-            }
-
-            dataUpdated = true;
-          }
-        } else if ((!bus.invalidateTime || bus.invalidateTime <= new Date()) || bus.locations.length !== 0) {
-          log(`Resetting ${name}'s location.`);
+      if (location) {
+        if ((!bus.invalidateTime || bus.invalidateTime <= new Date()) || bus.locations[0] !== location) {
+          log(`Setting ${name}'s location to ${location}.`);
 
           const now = new Date();
-          bus.locations = [];
+          bus.locations = [location];
           bus.invalidateTime = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
 
           const url = config.apiURL + "/buses/" + bus.id + "/location";
@@ -191,9 +187,35 @@ export async function fetchFromGoogleSheets() {
 
           dataUpdated = true;
         }
-      }));
-    }, Promise.resolve());
-  // }
+      } else if ((!bus.invalidateTime || bus.invalidateTime <= new Date()) || bus.locations.length !== 0) {
+        log(`Resetting ${name}'s location.`);
+
+        const now = new Date();
+        bus.locations = [];
+        bus.invalidateTime = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+
+        const url = config.apiURL + "/buses/" + bus.id + "/location";
+        if (config.dryRun) {
+          log(`Will PUT ${url}.`);
+        } else {
+          await rp.put(url, {json: {locations: bus.locations, invalidate_time: bus.invalidateTime, source: "google_sheets"}, headers: {Authorization: `Basic ${config.token}`}});
+        }
+
+        dataUpdated = true;
+      }
+    }));
+  }, Promise.resolve());
+
+  await Promise.all(Object.keys(data.buses).filter(key => !seenBuses[key]).map(async (key) => {
+    if (data.buses[key].available) {
+      console.log(`Marking ${key} as unavailable`);
+      data.buses[key].available = false;
+      if (!config.dryRun) {
+        await rp.patch(config.apiURL + "/buses/" + data.buses[key].id, {json: {available: false}, headers: {Authorization: `Basic ${config.token}`}});
+      }
+      dataUpdated = true;
+    }
+  }));
 }
 
 if (config.cron) {
