@@ -144,6 +144,7 @@ export async function fetchFromGoogleSheets() {
             dataUpdated = true;
           } else if (config.dryRun) {
             log(`${name} not found; skipping bus creation in dry run`);
+            return;
           } else {
             log(`Creating ${name}...`);
             const response: PostResponse = await rp.post(config.apiURL + "/buses", {json: {
@@ -153,6 +154,42 @@ export async function fetchFromGoogleSheets() {
             log(`Done creating bus ${name}. ID: ${response.id}`)
             data.buses[name] = {id: response.id, locations: []}
           }
+
+          bus = data.buses[name];
+        }
+
+        if (location) {
+          if ((!bus.invalidateTime || bus.invalidateTime <= new Date()) || bus.locations[0] !== location) {
+            log(`Setting ${name}'s location to ${location}.`);
+
+            const now = new Date();
+            bus.locations = [location];
+            bus.invalidateTime = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+
+            const url = config.apiURL + "/buses/" + bus.id + "/location";
+            if (config.dryRun) {
+              log(`Will PUT ${url}.`);
+            } else {
+              await rp.put(url, {json: {locations: bus.locations, invalidate_time: bus.invalidateTime, source: "google_sheets"}, headers: {Authorization: `Basic ${config.token}`}});
+            }
+
+            dataUpdated = true;
+          }
+        } else if ((!bus.invalidateTime || bus.invalidateTime <= new Date()) || bus.locations.length !== 0) {
+          log(`Resetting ${name}'s location.`);
+
+          const now = new Date();
+          bus.locations = [];
+          bus.invalidateTime = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+
+          const url = config.apiURL + "/buses/" + bus.id + "/location";
+          if (config.dryRun) {
+            log(`Will PUT ${url}.`);
+          } else {
+            await rp.put(url, {json: {locations: bus.locations, invalidate_time: bus.invalidateTime, source: "google_sheets"}, headers: {Authorization: `Basic ${config.token}`}});
+          }
+
+          dataUpdated = true;
         }
       }));
     }, Promise.resolve());
