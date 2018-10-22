@@ -118,7 +118,7 @@ export async function fetchFromGoogleSheets() {
         return;
       }
 
-      const locationStr = row[index + 1].textContent.trim();
+      const locationStr = row[index + 1].textContent.trim().toUpperCase();
       let location: string;
       if (locationStr.length > 0) {
         location = locationStr;
