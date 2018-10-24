@@ -171,7 +171,7 @@ export async function fetchFromGoogleSheets() {
       }
 
       if (location) {
-        if ((!bus.invalidateTime || bus.invalidateTime <= new Date()) || bus.locations[0] !== location) {
+        if (bus.locations[0] !== location) {
           log(`Setting ${name}'s location to ${location}.`);
 
           const now = new Date();
@@ -187,7 +187,7 @@ export async function fetchFromGoogleSheets() {
 
           dataUpdated = true;
         }
-      } else if ((!bus.invalidateTime || bus.invalidateTime <= new Date()) || bus.locations.length !== 0) {
+      } else if (bus.locations.length !== 0) {
         log(`Resetting ${name}'s location.`);
 
         const now = new Date();
