@@ -176,6 +176,9 @@ export async function fetchFromGoogleSheets() {
       } else if (config.dryRun) {
         log(`${name} not found; skipping bus creation in dry run`);
         return;
+      } else if (!location) {
+        log(`${name} has no location; skipping bus creation`);
+        return;
       } else {
         log(`Creating ${name}...`);
         const response: PostResponse = await rp.post(config.apiURL + "/buses", {json: {
