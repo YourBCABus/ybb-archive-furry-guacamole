@@ -12,6 +12,7 @@ export interface Config {
   dataPath: string;
   apiURL: string;
   feedURL: string;
+  jsonFeedURL: string;
   saveDataCron?: any;
   log?: boolean;
   dryRun?: boolean;
@@ -37,6 +38,15 @@ export interface ExternalBus {
 export interface Data {
   lastUpdated: Date | string;
   buses: Record<string, Bus>;
+}
+
+export interface Feed {
+  version: string;
+  encoding: string;
+  feed: {
+    updated: {$t: string},
+    entry: Record<string, {$t: string}>[]
+  };
 }
 
 interface GenericResponse {
@@ -104,94 +114,99 @@ async function saveData() {
 }
 
 export async function fetchFromGoogleSheets() {
-  const { document } = new JSDOM(await rp.get(config.feedURL)).window;
+  const documents = await Promise.all([rp.get(config.feedURL), rp.get(config.jsonFeedURL, {json: true})])
+  const { document } = new JSDOM(documents[0]).window;
+  const feed: Feed = documents[1];
   let busCache: ExternalBus[];
   let seenBuses: Record<string, boolean> = {};
   log(`Updating buses...`);
-  await [...document.getElementsByTagName("tr")].slice(3).map(row => {
+
+  let buses: {name: string, location: string}[] = [];
+
+  feed.feed.entry.forEach(entry => {
+    [["gsx$townsbuslocation", "gsx$_cokwr"], ["gsx$townsbuslocation_2", "gsx$_cre1l"]].map(keys => {return {name: keys[0], location: keys[1]}}).forEach(keys => {
+      const name: string = entry[keys.name] && entry[keys.name].$t && entry[keys.name].$t.trim();
+      const location: string = entry[keys.location] && entry[keys.location].$t && entry[keys.location].$t.trim().toUpperCase();
+      if (name && name.length > 0) {
+        seenBuses[name] = true;
+        buses.push({name, location: location && location.length > 0 ? location : undefined});
+      }
+    });
+  });
+
+  [...document.getElementsByTagName("tr")].slice(3).map(row => {
     return row.getElementsByTagName("td")
-  }).reduce<Promise<void>>(async (acc, row) => {
-    await acc;
-    await Promise.all([0, 2].map(async (index) => {
-      const name = row[index].textContent.trim();
-      if (name.length < 1) {
-        return;
-      }
+  }).forEach(row => [0, 2].map(index => {
+    const name = row[index].textContent.trim();
+    if (name.length < 1) {
+      return;
+    }
 
-      const locationStr = row[index + 1].textContent.trim().toUpperCase();
-      let location: string;
-      if (locationStr.length > 0) {
-        location = locationStr;
-      }
-      log(`=== ${name} @ ${location} ===`);
+    const locationStr = row[index + 1].textContent.trim().toUpperCase();
+    let location: string;
+    if (locationStr.length > 0) {
+      location = locationStr;
+    }
 
-      let bus = data.buses[name];
-      if (!bus) {
-        log(`${name} not found, attempting to update internal database`);
-        if (!busCache) {
-          busCache = await rp.get(config.apiURL + "/buses", {json: true});
-        }
-
-        let foundBus = busCache.find(bus => {
-          return bus.name === name || (bus.other_names && bus.other_names.includes(name));
-        });
-
-        if (foundBus) {
-          log(`${name} found, inserting ${foundBus._id} into database`);
-          data.buses[name] = {id: foundBus._id, locations: foundBus.locations, invalidateTime: foundBus.invalidate_time && new Date(foundBus.invalidate_time), available: foundBus.available}
-          dataUpdated = true;
-        } else if (config.dryRun) {
-          log(`${name} not found; skipping bus creation in dry run`);
-          return;
-        } else {
-          log(`Creating ${name}...`);
-          const response: PostResponse = await rp.post(config.apiURL + "/buses", {json: {
-            name,
-            available: true
-          }, headers: {Authorization: `Basic ${config.token}`}});
-          log(`Done creating bus ${name}. ID: ${response.id}`)
-          data.buses[name] = {id: response.id, locations: [], available: true}
-        }
-
-        bus = data.buses[name];
-        dataUpdated = true;
-      }
-
+    if (!seenBuses[name]) {
+      buses.push({name, location});
       seenBuses[name] = true;
+    }
+  }));
 
-      if (!bus.available) {
-        console.log(`Marking ${name} as available`);
-        bus.available = true;
+  await buses.reduce<Promise<void>>(async (acc, {name, location}) => {
+    await acc;
+    log(`=== ${name} @ ${location} ===`);
 
-        if (!config.dryRun) {
-          await rp.patch(config.apiURL + "/buses/" + bus.id, {json: {available: true}, headers: {Authorization: `Basic ${config.token}`}});
-        }
-
-        dataUpdated = true;
+    let bus = data.buses[name];
+    if (!bus) {
+      log(`${name} not found, attempting to update internal database`);
+      if (!busCache) {
+        busCache = await rp.get(config.apiURL + "/buses", {json: true});
       }
 
-      if (location) {
-        if (bus.locations[0] !== location) {
-          log(`Setting ${name}'s location to ${location}.`);
+      let foundBus = busCache.find(bus => {
+        return bus.name === name || (bus.other_names && bus.other_names.includes(name));
+      });
 
-          const now = new Date();
-          bus.locations = [location];
-          bus.invalidateTime = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+      if (foundBus) {
+        log(`${name} found, inserting ${foundBus._id} into database`);
+        data.buses[name] = {id: foundBus._id, locations: foundBus.locations, invalidateTime: foundBus.invalidate_time && new Date(foundBus.invalidate_time), available: foundBus.available}
+        dataUpdated = true;
+      } else if (config.dryRun) {
+        log(`${name} not found; skipping bus creation in dry run`);
+        return;
+      } else {
+        log(`Creating ${name}...`);
+        const response: PostResponse = await rp.post(config.apiURL + "/buses", {json: {
+          name,
+          available: true
+        }, headers: {Authorization: `Basic ${config.token}`}});
+        log(`Done creating bus ${name}. ID: ${response.id}`)
+        data.buses[name] = {id: response.id, locations: [], available: true}
+      }
 
-          const url = config.apiURL + "/buses/" + bus.id + "/location";
-          if (config.dryRun) {
-            log(`Will PUT ${url}.`);
-          } else {
-            await rp.put(url, {json: {locations: bus.locations, invalidate_time: bus.invalidateTime, source: "google_sheets"}, headers: {Authorization: `Basic ${config.token}`}});
-          }
+      bus = data.buses[name];
+      dataUpdated = true;
+    }
 
-          dataUpdated = true;
-        }
-      } else if (bus.locations.length !== 0) {
-        log(`Resetting ${name}'s location.`);
+    if (!bus.available) {
+      console.log(`Marking ${name} as available`);
+      bus.available = true;
+
+      if (!config.dryRun) {
+        await rp.patch(config.apiURL + "/buses/" + bus.id, {json: {available: true}, headers: {Authorization: `Basic ${config.token}`}});
+      }
+
+      dataUpdated = true;
+    }
+
+    if (location) {
+      if (bus.locations[0] !== location) {
+        log(`Setting ${name}'s location to ${location}.`);
 
         const now = new Date();
-        bus.locations = [];
+        bus.locations = [location];
         bus.invalidateTime = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
 
         const url = config.apiURL + "/buses/" + bus.id + "/location";
@@ -203,7 +218,22 @@ export async function fetchFromGoogleSheets() {
 
         dataUpdated = true;
       }
-    }));
+    } else if (bus.locations.length !== 0) {
+      log(`Resetting ${name}'s location.`);
+
+      const now = new Date();
+      bus.locations = [];
+      bus.invalidateTime = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+
+      const url = config.apiURL + "/buses/" + bus.id + "/location";
+      if (config.dryRun) {
+        log(`Will PUT ${url}.`);
+      } else {
+        await rp.put(url, {json: {locations: bus.locations, invalidate_time: bus.invalidateTime, source: "google_sheets"}, headers: {Authorization: `Basic ${config.token}`}});
+      }
+
+      dataUpdated = true;
+    }
   }, Promise.resolve());
 
   await Promise.all(Object.keys(data.buses).filter(key => !seenBuses[key]).map(async (key) => {
