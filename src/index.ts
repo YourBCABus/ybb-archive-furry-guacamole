@@ -216,7 +216,7 @@ export async function fetchFromGoogleSheets() {
         if (config.dryRun) {
           log(`Will PUT ${url}.`);
         } else {
-          await rp.put(url, {json: {locations: bus.locations, invalidate_time: bus.invalidateTime, source: "google_sheets"}, headers: {Authorization: `Basic ${config.token}`}});
+          await rp.put(url, {json: {locations: bus.locations, invalidate_time: bus.invalidateTime, source: "google_sheets", associate_time: true}, headers: {Authorization: `Basic ${config.token}`}});
         }
 
         dataUpdated = true;
