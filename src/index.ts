@@ -124,7 +124,7 @@ export async function fetchFromGoogleSheets() {
   let buses: {name: string, location: string}[] = [];
 
   feed.feed.entry.forEach(entry => {
-    [["gsx$townsbuslocation", "gsx$_cokwr"], ["gsx$townsbuslocation_2", "gsx$_cre1l"]].map(keys => {return {name: keys[0], location: keys[1]}}).forEach(keys => {
+    [["gsx$towns", "gsx$loc"], ["gsx$townsbuslocation", "gsx$loc_2"]].map(keys => {return {name: keys[0], location: keys[1]}}).forEach(keys => {
       const name: string = entry[keys.name] && entry[keys.name].$t && entry[keys.name].$t.trim();
       const location: string = entry[keys.location] && entry[keys.location].$t && entry[keys.location].$t.trim().toUpperCase();
       if (name && name.length > 0) {
@@ -136,7 +136,7 @@ export async function fetchFromGoogleSheets() {
 
   [...document.getElementsByTagName("tr")].slice(3).map(row => {
     return row.getElementsByTagName("td")
-  }).forEach(row => [0, 2].map(index => {
+  }).forEach(row => [0, 3].map(index => {
     const name = row[index].textContent.trim();
     if (name.length < 1) {
       return;
