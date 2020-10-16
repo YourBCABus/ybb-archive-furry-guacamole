@@ -22,6 +22,7 @@ export interface Config {
 export interface Bus {
   id: string;
   invalidateTime?: Date | string;
+  departure?: number;
   locations: string[];
   available: boolean;
 }
@@ -30,6 +31,7 @@ export interface ExternalBus {
   _id: string;
   name?: string;
   locations: string[];
+  departure?: number;
   invalidate_time?: string;
   other_names?: string[];
   available: boolean;
@@ -113,6 +115,20 @@ async function saveData() {
   }
 }
 
+const timeRegex = /(0?[0-9]|1[0-2]):([0-5][0-9])/;
+
+function parseTime(str: string) {
+  const match = timeRegex.exec(str);
+  if (match) {
+    let hour = parseInt(match[1]);
+    const minute = parseInt(match[2]);
+    if (hour > 0 && hour < 11) {
+      hour += 12; // PM hardcode but it works for now
+    }
+    return hour * 60 + minute;
+  }
+}
+
 export async function fetchFromGoogleSheets() {
   const documents = await Promise.all([rp.get(config.feedURL), rp.get(config.jsonFeedURL, {json: true})])
   const { document } = new JSDOM(documents[0]).window;
@@ -121,15 +137,21 @@ export async function fetchFromGoogleSheets() {
   let seenBuses: Record<string, boolean> = {};
   log(`Updating buses...`);
 
-  let buses: {name: string, location: string}[] = [];
+  let buses: {name: string, location: string, departure?: number}[] = [];
 
   feed.feed.entry.forEach(entry => {
-    [["gsx$towns", "gsx$loc"], ["gsx$townsbuslocation", "gsx$loc_2"]].map(keys => {return {name: keys[0], location: keys[1]}}).forEach(keys => {
+    [["gsx$towns", "gsx$loc", "gsx$time"], ["gsx$townsbuslocation", "gsx$loc_2", "gsx$time_2"]].map(keys => {return {name: keys[0], location: keys[1], departure: keys[2]}}).forEach(keys => {
       const name: string = entry[keys.name] && entry[keys.name].$t && entry[keys.name].$t.trim();
       const location: string = entry[keys.location] && entry[keys.location].$t && entry[keys.location].$t.trim().toUpperCase();
+      
+      let departure: number | undefined;
+      if (entry[keys.departure] && entry[keys.departure].$t) {
+        departure = parseTime(entry[keys.departure].$t);
+      }
+
       if (name && name.length > 0) {
         seenBuses[name] = true;
-        buses.push({name, location: location && location.length > 0 ? location : undefined});
+        buses.push({name, location: location && location.length > 0 ? location : undefined, departure});
       }
     });
   });
@@ -149,14 +171,14 @@ export async function fetchFromGoogleSheets() {
     }
 
     if (!seenBuses[name]) {
-      buses.push({name, location});
+      buses.push({name, location, departure: row[index + 2].textContent ? parseTime(row[index + 2].textContent) : undefined});
       seenBuses[name] = true;
     }
   }));
 
-  await buses.reduce<Promise<void>>(async (acc, {name, location}) => {
+  await buses.reduce<Promise<void>>(async (acc, {name, location, departure}) => {
     await acc;
-    log(`=== ${name} @ ${location} ===`);
+    log(`=== ${name} @ ${location} (${departure}) ===`);
 
     let bus = data.buses[name];
     if (!bus) {
@@ -171,7 +193,7 @@ export async function fetchFromGoogleSheets() {
 
       if (foundBus) {
         log(`${name} found, inserting ${foundBus._id} into database`);
-        data.buses[name] = {id: foundBus._id, locations: foundBus.locations, invalidateTime: foundBus.invalidate_time && new Date(foundBus.invalidate_time), available: foundBus.available}
+        data.buses[name] = {id: foundBus._id, locations: foundBus.locations, departure: foundBus.departure, invalidateTime: foundBus.invalidate_time && new Date(foundBus.invalidate_time), available: foundBus.available}
         dataUpdated = true;
       } else if (config.dryRun) {
         log(`${name} not found; skipping bus creation in dry run`);
@@ -236,6 +258,16 @@ export async function fetchFromGoogleSheets() {
       }
 
       dataUpdated = true;
+    }
+
+    if (typeof departure !== "undefined") {
+      if (bus.departure !== departure) {
+        log(`Setting ${name}'s departure to ${departure}.`);
+        bus.departure = departure;
+        if (config.dryRun) {
+          log(`Will PUT ???`);
+        }
+      }
     }
   }, Promise.resolve());
 
