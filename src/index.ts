@@ -115,15 +115,25 @@ async function saveData() {
   }
 }
 
-const timeRegex = /(0?[0-9]|1[0-2]):([0-5][0-9])/;
+const timeRegex = /(0?[0-9]|1[0-2]):([0-5][0-9]) *(AM|PM)?/;
 
 function parseTime(str: string) {
   const match = timeRegex.exec(str);
   if (match) {
     let hour = parseInt(match[1]);
     const minute = parseInt(match[2]);
-    if (hour > 0 && hour < 11) {
-      hour += 12; // PM hardcode but it works for now
+    if (match.length < 4) {
+      if (hour > 0 && hour < 11) {
+        hour += 12; // PM hardcode but it works for now
+      }
+    } else if (match[3] == "AM") {
+      if (hour === 12) {
+        hour = 0;
+      }
+    } else {
+      if (hour !== 12) {
+        hour += 12;
+      }
     }
     return hour * 60 + minute;
   }
@@ -264,8 +274,11 @@ export async function fetchFromGoogleSheets() {
       if (bus.departure !== departure) {
         log(`Setting ${name}'s departure to ${departure}.`);
         bus.departure = departure;
+        const url = config.apiURL + "/buses/" + bus.id + "/departure";
         if (config.dryRun) {
-          log(`Will PUT ???`);
+          log(`Will PUT ${url}.`);
+        } else {
+          await rp.put(url, {json: {departure}});
         }
       }
     }
