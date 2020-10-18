@@ -236,6 +236,19 @@ export async function fetchFromGoogleSheets() {
       dataUpdated = true;
     }
 
+    if (typeof departure !== "undefined") {
+      if (bus.departure !== departure) {
+        log(`Setting ${name}'s departure to ${departure}.`);
+        bus.departure = departure;
+        const url = config.apiURL + "/buses/" + bus.id + "/departure";
+        if (config.dryRun) {
+          log(`Will PUT ${url}.`);
+        } else {
+          await rp.put(url, {json: {departure}, headers: {Authorization: `Basic ${config.token}`}});
+        }
+      }
+    }
+
     if (location) {
       if (bus.locations[0] !== location) {
         log(`Setting ${name}'s location to ${location}.`);
@@ -268,19 +281,6 @@ export async function fetchFromGoogleSheets() {
       }
 
       dataUpdated = true;
-    }
-
-    if (typeof departure !== "undefined") {
-      if (bus.departure !== departure) {
-        log(`Setting ${name}'s departure to ${departure}.`);
-        bus.departure = departure;
-        const url = config.apiURL + "/buses/" + bus.id + "/departure";
-        if (config.dryRun) {
-          log(`Will PUT ${url}.`);
-        } else {
-          await rp.put(url, {json: {departure}});
-        }
-      }
     }
   }, Promise.resolve());
 
