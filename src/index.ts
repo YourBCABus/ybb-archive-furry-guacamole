@@ -236,7 +236,7 @@ export async function fetchFromGoogleSheets() {
       dataUpdated = true;
     }
 
-    if (typeof departure !== "undefined") {
+    if (typeof departure !== "undefined" && name !== "North Bergen") {
       if (bus.departure !== departure) {
         log(`Setting ${name}'s departure to ${departure}.`);
         bus.departure = departure;
