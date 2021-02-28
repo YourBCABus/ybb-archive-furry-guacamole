@@ -5,6 +5,7 @@ import { JSDOM } from 'jsdom';
 import rp from 'request-promise-native';
 import syncRequest from 'sync-request';
 import schedule from 'node-schedule';
+import { DateTime } from 'luxon';
 
 export interface Config {
   cron?: any[];
@@ -31,7 +32,7 @@ export interface ExternalBus {
   _id: string;
   name?: string;
   locations: string[];
-  departure?: number;
+  departure_time?: string;
   invalidate_time?: string;
   other_names?: string[];
   available: boolean;
@@ -186,6 +187,9 @@ export async function fetchFromGoogleSheets() {
     }
   }));
 
+  const {timezone}: {timezone: string} = await rp.get(config.apiURL, {json: true});
+  const now = timezone ? DateTime.local().setZone(timezone) : DateTime.local();
+
   await buses.reduce<Promise<void>>(async (acc, {name, location, departure}) => {
     await acc;
     log(`=== ${name} @ ${location} (${departure}) ===`);
@@ -203,7 +207,13 @@ export async function fetchFromGoogleSheets() {
 
       if (foundBus) {
         log(`${name} found, inserting ${foundBus._id} into database`);
-        data.buses[name] = {id: foundBus._id, locations: foundBus.locations, departure: foundBus.departure, invalidateTime: foundBus.invalidate_time && new Date(foundBus.invalidate_time), available: foundBus.available}
+        let departure: number | undefined;
+        if (foundBus.departure_time) {
+          const date = new Date(foundBus.departure_time);
+          if (Number.isNaN(date.getTime())) throw new Error("Departure time date is invalid, possible server errowor?");
+          departure = Math.floor(date.getTime() / 1000) % (24 * 60 * 60);
+        }
+        data.buses[name] = {id: foundBus._id, locations: foundBus.locations, departure, invalidateTime: foundBus.invalidate_time && new Date(foundBus.invalidate_time), available: foundBus.available}
         dataUpdated = true;
       } else if (config.dryRun) {
         log(`${name} not found; skipping bus creation in dry run`);
@@ -241,10 +251,17 @@ export async function fetchFromGoogleSheets() {
         log(`Setting ${name}'s departure to ${departure}.`);
         bus.departure = departure;
         const url = config.apiURL + "/buses/" + bus.id + "/departure";
+        const date = now.set({
+          hour: Math.floor(departure / 3600),
+          minute: Math.floor(departure / 60) % 60,
+          second: departure % 60,
+          millisecond: 0
+        });
+        const dateStr = date.toISO();
         if (config.dryRun) {
-          log(`Will PUT ${url}.`);
+          log(`Will PUT ${url} with date ${dateStr}`);
         } else {
-          await rp.put(url, {json: {departure}, headers: {Authorization: `Basic ${config.token}`}});
+          await rp.put(url, { json: { departure_time: dateStr }, headers: {Authorization: `Basic ${config.token}`}});
         }
       }
     }
